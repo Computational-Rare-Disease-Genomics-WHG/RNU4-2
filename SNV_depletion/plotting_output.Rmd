@@ -1,0 +1,130 @@
+---
+title: "R Notebook"
+output: 
+---
+
+```{r}
+library(tidyverse)
+library(data.table)
+```
+
+```{r}
+intergenic = fread('data/prop_observed_snvs/intergenic_chr12.txt')
+snrnas = fread('data/prop_observed_snvs/snrnas.txt')
+length(unique(snrnas$region_id))
+```
+
+```{r}
+snrnas[region_id == 'RNU4ATAC' & dist_to_med < -0.1 & window_centre<121530993]
+min(snrnas[region_id == 'RNU4ATAC' & dist_to_med < -0.1 & window_centre<121530993, dist_to_med])
+min(snrnas[region_id == 'RNU4ATAC' & dist_to_med < -0.1 & window_centre>=121530993, dist_to_med])
+
+```
+
+
+# replace U- genes with ENSG ids
+```{r}
+snrna_info = fread('data/ensembl/brainvar_snRNA_tpm5.txt')
+snrna_info = unique(snrna_info[, .(region_id = gene_id, gene_id, gene_name, chr)])
+snrna_info[gene_name %in% snrna_info[which(duplicated(gene_name)),gene_name], duplicated_gene_name := 1]
+
+snrnas = snrna_info[snrnas, on = .(region_id)]
+snrnas[is.na(duplicated_gene_name) , region_id := gene_name]
+
+snrnas[, region_id := factor(region_id, levels = unique(snrnas$region_id))]
+
+```
+
+```{r}
+snrnas[, norm_pos := relative_pos / max(relative_pos), by = .(gene_id)]
+```
+
+```{r}
+interpolated_values = lapply(unique(snrnas$region_id), function(x)  approx(snrnas[region_id == x]$norm_pos, 
+                                                                         snrnas[region_id == x]$dist_to_med,  
+                                                                         method = "constant", xout = seq(0, 1, 0.01)))
+
+
+snrnas_plot = data.table(region_id = rep(unique(snrnas$region_id), each = 101),
+                         norm_pos = unlist(lapply(interpolated_values, function(elem) elem$x)),
+                         dist_to_med = unlist(lapply(interpolated_values, function(elem) elem$y)))
+```
+
+
+```{r}
+ggplot(snrnas_plot, 
+       aes(x = norm_pos, y =region_id, fill = dist_to_med)) + 
+  geom_tile()+
+  scale_fill_gradient2(low = "#FF0000",
+                       mid = "#FFFFCC",
+                       high = "#075AFF")  +
+  xlab('normalised window position') + ylab('') + 
+  labs(fill = 'normalised observed\nproportion of possible SNVs') + theme_classic()
+ggsave('results/dist_to_median_snrnas.png', height = 5, width = 7)
+
+```
+
+```{r}
+# defining regions with depleted proportion of possible SNVs
+
+snrnas[, start := window_centre - 9]
+snrnas[, end := window_centre + 8]
+
+snrnas[, row_number := 1:nrow(snrnas)]
+
+snrnas[dist_to_med < -0.2, depleted_region := 1]
+depleted_regions = snrnas[depleted_region == 1]
+shift_vector = shift(depleted_regions$row_number, type = 'lag')
+shift_vector[1]<-56
+depleted_regions[, row_increment := depleted_regions$row_number -shift_vector]
+
+
+depleted_regions[, region_number := cumsum(row_increment > 5), by = .(gene_id)]
+
+
+depleted_regions = depleted_regions[, .(gene_id, gene_name=region_id, region_number, 
+                                                 start, end, dist_to_med)][, .(min_normalised_prop_obs = min(dist_to_med),
+                                                                               depleted_region_start = min(start),
+                                                                               depleted_region_end = max(end)), 
+                                                                           by = .(gene_id, gene_name, region_number)]
+depleted_regions[, region_length := depleted_region_end-depleted_region_start+1]
+depleted_regions[, region_number := NULL]
+
+# add chromosome
+depleted_regions = unique(snrna_info[, .(gene_name, chr)])[depleted_regions, on = .(gene_name)]
+
+fwrite(depleted_regions[, .(gene_id, gene_name, min_normalised_prop_obs, chr, 
+                            depleted_region_start, depleted_region_end, region_length)], 'results/snv_depleted_regions_snRNAs.txt', sep = '\t')
+```
+
+
+```{r}
+# comparing with intergenic regions
+combined_dt = unique(rbind(snrnas[gene_name %in% c('RNU4-1', 'RNU4-2'), .(region_id=gene_name, median_prop_snv)], 
+             intergenic[, .(region_id, median_prop_snv)]) ) 
+combined_dt[, category := ifelse(region_id %in% c('RNU4-1', 'RNU4-2') , 1, 0)]
+combined_dt[, category := factor(category, levels = c(1,0))]
+setorder(combined_dt, category)
+ggplot(combined_dt, aes(x = median_prop_snv, fill = category)) + 
+  geom_histogram(binwidth = 0.02) +
+  geom_text(data = . %>% filter(region_id %in% c('RNU4-1', 'RNU4-2')), 
+            aes(x = median_prop_snv, y=1,label = region_id), 
+            vjust = -0.5, hjust = 0.5, color = "black", size = 3) +
+  xlab('median proportion of possible SNVs observed per window in UK Biobank') + 
+  scale_fill_manual(values=c('#006F6D', 'grey')) + labs(y = 'count') + theme_minimal()+ 
+  theme(legend.position = 'None') 
+
+ggsave('results/intergenic_median_props.png', width = 7, height = 3.5)
+```
+
+
+
+
+```{r}
+library(coin)
+set.seed(123)
+# Run approximative (Monte Carlo) Fisher-Pitman test
+oneway_test(median_prop_snv ~ category, data=combined_dt, 
+            distribution = approximate(nresample = 1000),
+            alternative = 'greater')
+```

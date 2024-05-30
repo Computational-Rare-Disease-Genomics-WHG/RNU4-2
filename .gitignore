@@ -1,0 +1,13 @@
+SNV_depletion/.Rproj.user
+SNV_depletion/.Rhistory
+SNV_depletion/.RData
+SNV_depletion/.Ruserdata
+SNV_depletion/data/ensembl/*
+SNV_depletion/data/ukb/*
+*/.DS_Store
+.DS_Store
+SNV_depletion/SNV_depletion.Rproj
+SNV_depletion/data/prop_observed_snvs/snrnas.txt
+SNV_depletion/data/prop_observed_snvs/intergenic_chr12.txt
+SNV_depletion/results/dist_to_median_snrnas.png
+SNV_depletion/results/intergenic_median_props.png
